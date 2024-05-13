@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: unlicense
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@uniswap/v3-core/contracts/ISwapRouter.sol";
+import "@uniswap/lib/contracts/libraries/UniswapV3Library.sol";
+
+contract UniswapVault is Ownable {
+    using SafeMath for uint256;
+    IERC20 public token;
+    ISwapRouter public swapRouter;
+
+    uint256 public lastHarvest;
+
+    constructor(address _token, address _swapRouter) {
+        token = IERC20(_token);
+        swapRouter = ISwapRouter(_swapRouter);
+        lastHarvest = block.timestamp;
+    }
+
+    function harvest() public onlyOwner {
+        uint256 timePassed = block.timestamp.sub(lastHarvest);
+        require(timePassed >= 86400, "Wait 24 hours since the last harvest");
+
+        // Calculate LP tokens amount
+        uint256 lpTokenBal = IERC20(UNI_V3_POOL_TOKEN_ADDRESS).balanceOf(address(this));
+        uint256 tokenRewardPerLP = IUniswapV3Pool(UNI_V3_POOL_ADDR).tokenRewardPerShare();
+        uint256 reward = lpTokenBal.mul(tokenRewardPerLP).div(1e18);
+
+        // Harvest the reward
+        IERC20(UNI_V3_POOL_TOKEN_ADDRESS).safeTransfer(token, address(UNI_V3_POOL));
+
+        // Convert the reward to ETH
+        uint256 ethReward = _swapToEth(reward);
+
+        // Add ETH to the vault
+        token.safeTransfer(owner(), address(this).balance);
+
+        lastHarvest = block.timestamp;
+    }
+
+    function _swapToEth(uint256 _amount) private returns (uint256) {
+        uint256 tokenBalance = token.balanceOf(address(this));
+        require(tokenBalance > _amount, "Insufficient balance");
+
+        // Calculate the amount of ETH to receive
+        uint256 ethAmount = _calculateEthAmount(_amount);
+
+        // Approve the swap router to spend the tokens
+        token.approve(address(swapRouter), _amount);
+
+        // Swap the tokens to ETH
+        swapRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            _amount,
+            ethAmount,
+            address(token),
+            address(this),
+            block.timestamp.add(600)
+        );
+
+        return ethAmount;
+    }
+
+    function _calculateEthAmount(uint256 _amount) private view returns (uint256) {
+        uint256 tokenSupply = IUniswapV3Pool(UNI_V3_POOL_ADDR).token0().balanceOf(address(this)).add(
+            IUniswapV3Pool(UNI_V3_POOL_ADDR).token1().balanceOf(address(this))
+        );
+        uint256 price = UniswapV3Library.quote(_amount, tokenSupply);
+        return price.div(1e18);
+    }
+}
